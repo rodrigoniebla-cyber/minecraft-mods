@@ -1,0 +1,16 @@
+{
+	"schemaVersion": 1,
+	"id": "villager-trading-predictor-gametest",
+	"version": "1.0.0",
+	"name": "VTP end-to-end client test",
+	"environment": "client",
+	"entrypoints": {
+		"fabric-client-gametest": [
+			"net.manaz.vtp.gametest.ViaProxyEndToEndTest"
+		]
+	},
+	"depends": {
+		"villager-trading-predictor": "*",
+		"fabric-client-gametest-api-v1": "*"
+	}
+}

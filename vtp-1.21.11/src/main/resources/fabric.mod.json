@@ -1,0 +1,31 @@
+{
+	"schemaVersion": 1,
+	"id": "villager-trading-predictor",
+	"version": "${version}",
+	"name": "Villager Trading Predictor",
+	"description": "Predicts enchantment trades at every profession level on Minecraft 26.2 servers, from a 1.21.11 client. Know if a villager is worth keeping before spending a single reroll.",
+	"authors": [
+		"Me!"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/villager-trading-predictor/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"net.manaz.vtp.VillagerTradingPredictor"
+		]
+	},
+	"mixins": [
+		"villager-trading-predictor.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.17.0",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}

@@ -1,0 +1,117 @@
+plugins {
+	id 'fabric-loom' version "${loom_version}"
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = project.archives_base_name
+}
+
+repositories {
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	mappings loom.officialMojangMappings()
+	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+}
+
+processResources {
+	inputs.property "version", project.version
+	filesMatching("fabric.mod.json") {
+		expand "version": project.version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 21
+	it.options.encoding = 'UTF-8'
+}
+
+java {
+	toolchain.languageVersion = JavaLanguageVersion.of(21)
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
+}
+
+jar {
+	from("LICENSE_villager-trading-predictor")
+}
+
+dependencies {
+	testImplementation "net.fabricmc:fabric-loader-junit:${project.loader_version}"
+}
+
+test {
+	useJUnitPlatform()
+	testLogging {
+		events "passed", "failed"
+		showStandardStreams = true
+		exceptionFormat = "full"
+	}
+}
+
+// End-to-end client test (not shipped): a 1.21.11 client joins a 26.2 server through ViaProxy.
+// Run with: ./gradlew runClientGameTest -Dvtp.e2e.address=127.0.0.1:25568 -Dvtp.e2e.seed=<seed>
+fabricApi {
+	configureTests {
+		createSourceSet = true
+		modId = "villager-trading-predictor-gametest"
+		enableGameTests = false
+		enableClientGameTests = true
+		eula = true
+		clearRunDirectory = false
+		username = "VtpTester"
+	}
+}
+
+tasks.matching { it.name == "runClientGameTest" }.configureEach {
+	// The test talks to a real external server, which the gametest network synchronizer cannot track.
+	jvmArgs "-Dfabric.client.gametest.disableNetworkSynchronizer=true"
+	["vtp.e2e.address", "vtp.e2e.seed", "vtp.e2e.rcon"].each { key ->
+		if (System.getProperty(key) != null) {
+			jvmArgs "-D${key}=${System.getProperty(key)}"
+		}
+	}
+}
+
+// Same end-to-end test, but against the remapped release jar on a production (intermediary) client.
+// Run with: ./gradlew prodClientGameTest -Dvtp.e2e.address=... -Dvtp.e2e.seed=...  (needs a display, e.g. xvfb-run)
+configurations {
+	productionRuntimeMods
+}
+
+dependencies {
+	productionRuntimeMods "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+}
+
+def gametestJar = tasks.register("gametestJar", Jar) {
+	from sourceSets.gametest.output
+	archiveClassifier = "gametest-dev"
+	destinationDirectory = layout.buildDirectory.dir("devlibs")
+}
+
+def remapGametestJar = tasks.register("remapGametestJar", net.fabricmc.loom.task.RemapJarTask) {
+	inputFile = gametestJar.flatMap { it.archiveFile }
+	archiveClassifier = "gametest"
+	destinationDirectory = layout.buildDirectory.dir("gametest-libs")
+	addNestedDependencies = false
+}
+
+tasks.register("prodClientGameTest", net.fabricmc.loom.task.prod.ClientProductionRunTask) {
+	mods.from(configurations.productionRuntimeMods)
+	mods.from(tasks.named("remapJar"))
+	mods.from(remapGametestJar)
+	useXVFB = false
+	runDir = layout.buildDirectory.dir("run/prodClientGameTest")
+	jvmArgs.add("-Dfabric.client.gametest")
+	jvmArgs.add("-Dfabric.client.gametest.disableNetworkSynchronizer=true")
+	["vtp.e2e.address", "vtp.e2e.seed", "vtp.e2e.rcon"].each { key ->
+		if (System.getProperty(key) != null) {
+			jvmArgs.add("-D${key}=${System.getProperty(key)}")
+		}
+	}
+}

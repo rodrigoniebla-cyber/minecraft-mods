@@ -1,0 +1,19 @@
+{
+  "required": true,
+  "package": "net.manaz.vtp.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "MerchantScreenMixin",
+    "GuiItemRenderStateMixin",
+    "GuiRendererMixin",
+    "MultiPlayerGameModeMixin",
+    "VillagerMixin",
+    "ClientPacketListenerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "overwrites": {
+    "requireAnnotations": true
+  }
+}

@@ -119,6 +119,27 @@ public class TradeDataLoader {
       }
    }
 
+   private static final Map<String, List<Identifier>> potionSets = new HashMap<>();
+
+   /**
+    * Resolves a potion holder-set reference ("#tag", "id" or a list of ids) to potion ids in 26.2
+    * iteration order. Potions are a built-in registry, so the bundled vanilla 26.2 tag is used.
+    */
+   public static List<Identifier> resolvePotions(JsonElement reference) {
+      return potionSets.computeIfAbsent(reference.toString(), ignored -> {
+         SequencedSet<Identifier> ids = new LinkedHashSet<>();
+         if (reference.isJsonPrimitive() && reference.getAsString().startsWith("#")) {
+            collectBundledTag(parseId(reference.getAsString().substring(1)), "potion", ids, new HashSet<>());
+         } else {
+            for (JsonElement element : VillagerTrade.asArray(reference)) {
+               ids.add(parseId(element.getAsString()));
+            }
+         }
+
+         return List.copyOf(ids);
+      });
+   }
+
    private static List<Holder<Enchantment>> resolveEnchantmentTag(Registry<Enchantment> registry, Identifier tag) {
       Optional<HolderSet.Named<Enchantment>> synced = registry.get(TagKey.create(Registries.ENCHANTMENT, tag));
       if (synced.isPresent() && synced.get().size() > 0) {

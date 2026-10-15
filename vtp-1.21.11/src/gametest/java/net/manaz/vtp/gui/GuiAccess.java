@@ -20,6 +20,18 @@ public final class GuiAccess {
       return new VtpSettingsScreen();
    }
 
+   public static Screen targetsOfKind(int kind) {
+      try {
+         Field lastKind = VtpSettingsScreen.class.getDeclaredField("lastTargetKind");
+         lastKind.setAccessible(true);
+         lastKind.setInt(null, kind);
+      } catch (ReflectiveOperationException e) {
+         throw new AssertionError(e);
+      }
+
+      return settingsOnTab(1);
+   }
+
    public static Screen hudSettings(Screen parent) {
       return new VtpHudSettingsScreen(parent);
    }

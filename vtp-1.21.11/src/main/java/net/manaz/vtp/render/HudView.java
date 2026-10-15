@@ -55,6 +55,8 @@ public record HudView(
                List<EnchantmentTarget> targets = VillagerHudRenderer.getTargets();
                PredictionResult best = null;
                EnchantmentTarget selected = null;
+               PredictionEngine.LevelPlan bestPlan = null;
+               EnchantmentTarget planTarget = null;
 
                for (EnchantmentTarget target : targets) {
                   PredictionResult result = PredictionEngine.predictForVillager(seed, uuid, data, target);
@@ -62,30 +64,36 @@ public record HudView(
                      best = result;
                      selected = target;
                   }
+
+                  Optional<PredictionEngine.LevelPlan> plan = PredictionEngine.predictLevelUp(seed, data, target);
+                  if (plan.isPresent()
+                     && (bestPlan == null || plan.get().level() < bestPlan.level() || plan.get().level() == bestPlan.level() && plan.get().skips() < bestPlan.skips())) {
+                     bestPlan = plan.get();
+                     planTarget = target;
+                  }
                }
 
-               String targetx = selected == null
-                  ? "No target"
-                  : VtpUi.name(selected.enchantmentKey().identifier().toString()) + " " + VillagerHudRenderer.fmtLvl(selected.minLevel());
                String result = "Add a target in /vtp";
                int price = -1;
                boolean found = best != null && best.found();
                if (found) {
                   int count = best.rerollsNeeded().orElseThrow();
                   result = count == 0 ? "Available" : count + (count == 1 ? " reroll" : " rerolls");
-
-                  for (TradeSimulator.SimulatedOffer offer : best.targetRollOffers()) {
-                     if (offer.enchantment().isPresent()) {
-                        TradeSimulator.EnchantmentResult e = offer.enchantment().get();
-                        if (selected.matches(e.enchantment(), e.level(), e.emeraldPrice())) {
-                           price = e.emeraldPrice();
-                           break;
-                        }
-                     }
-                  }
+                  EnchantmentTarget chosen = selected;
+                  price = best.targetRollOffers().stream().mapToInt(chosen::priceOf).filter(p -> p >= 0).findFirst().orElse(-1);
+               } else if (bestPlan != null) {
+                  // Only reachable by levelling up: say which level-up gets it.
+                  selected = planTarget;
+                  found = true;
+                  String level = new String[]{"", "Novice", "Apprentice", "Journeyman", "Expert", "Master"}[bestPlan.level()] + ": ";
+                  result = level + (bestPlan.skips() == 0 ? "next level-up" : "after " + bestPlan.skips() + " other level-up" + (bestPlan.skips() == 1 ? "" : "s"));
+                  EnchantmentTarget chosen = selected;
+                  price = bestPlan.offers().stream().mapToInt(chosen::priceOf).filter(p -> p >= 0).findFirst().orElse(-1);
                } else if (best != null) {
                   result = locked ? "Trades locked" : (best.maxRerollsSearched() > 0 ? "Over " + best.maxRerollsSearched() + " rerolls" : "Waiting for trades");
                }
+
+               String targetx = selected == null ? "No target" : selected.label();
 
                String status = VillagerTracker.status(uuid, data);
                String warning = status.startsWith("Uncertain")
@@ -93,7 +101,7 @@ public record HudView(
                   : (status.startsWith("Forecast unavailable") ? "Forecast unavailable" : "");
                List<List<TradeSimulator.SimulatedOffer>> future = locked
                   ? List.of()
-                  : PredictionEngine.getForecastRounds(seed, data.profession(), data.level(), 5);
+                  : PredictionEngine.getForecastRounds(seed, data, data.level(), 5);
                Optional<List<TradeSimulator.SimulatedOffer>> actual = VillagerTracker.getCurrentOffers(uuid);
                boolean pending = VillagerTracker.isAwaitingOffers(uuid);
                List<HudView.Row> trades = new ArrayList<>();
@@ -135,7 +143,7 @@ public record HudView(
                         );
                      }
                   } else if (level > data.level() || level == data.level() && pending) {
-                     List<List<TradeSimulator.SimulatedOffer>> rounds = PredictionEngine.getForecastRounds(seed, data.profession(), level, 1);
+                     List<List<TradeSimulator.SimulatedOffer>> rounds = PredictionEngine.getForecastRounds(seed, data, level, 1);
                      levels.addAll(bookRows(label, rounds.isEmpty() ? null : rounds.getFirst(), true));
                   } else {
                      levels.add(new HudView.Row(label, "Not observed", -1, false, false));
@@ -156,20 +164,10 @@ public record HudView(
       if (offers == null) {
          return List.of(new HudView.Row(label, "…", -1, false, forecast));
       } else {
-         List<TradeSimulator.EnchantmentResult> books = offers.stream().flatMap(o -> o.enchantment().stream()).toList();
-         return books.isEmpty()
+         List<OfferText.Highlight> highlights = OfferText.highlights(offers);
+         return highlights.isEmpty()
             ? List.of(new HudView.Row(label, "—", -1, false, forecast))
-            : books.stream()
-               .map(
-                  e -> new HudView.Row(
-                     label,
-                     ((Enchantment)e.enchantment().value()).description().getString() + " " + VillagerHudRenderer.fmtLvl(e.level()),
-                     e.emeraldPrice(),
-                     VillagerHudRenderer.getTargets().stream().anyMatch(t -> t.matches(e.enchantment(), e.level(), e.emeraldPrice())),
-                     forecast
-                  )
-               )
-               .toList();
+            : highlights.stream().map(h -> new HudView.Row(label, h.text(), h.price(), h.match(), forecast)).toList();
       }
    }
 

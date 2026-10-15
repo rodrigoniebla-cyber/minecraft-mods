@@ -336,7 +336,7 @@ public class AutoRerollManager {
                PredictionResult best = null;
 
                for (EnchantmentTarget t : tgts) {
-                  PredictionResult r = PredictionEngine.predictFrom(worldSeed, profession, data.level(), t, nowRound);
+                  PredictionResult r = PredictionEngine.predictFrom(worldSeed, data, data.level(), t, nowRound);
                   if (r.found() && (best == null || r.rerollsNeeded().get() < best.rerollsNeeded().get())) {
                      best = r;
                   }

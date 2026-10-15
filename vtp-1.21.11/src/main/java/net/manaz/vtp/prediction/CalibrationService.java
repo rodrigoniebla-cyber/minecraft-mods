@@ -34,7 +34,7 @@ public final class CalibrationService {
          binding = new CalibrationService.Binding(
             VtpPersistence.epoch(), uuid, data, SeedProvider.getSeed().orElseThrow(), VillagerTracker.observationRevision(uuid)
          );
-         candidates = PredictionEngine.findCalibrationSequence(binding.seed(), data.profession(), data.level(), specs);
+         candidates = PredictionEngine.findCalibrationSequence(binding.seed(), data, specs);
          return candidates;
       } else {
          return List.of();

@@ -26,6 +26,7 @@ import net.manaz.vtp.render.VillagerHudRenderer;
 import net.manaz.vtp.render.VillagerTracker;
 import net.manaz.vtp.seed.SeedProvider;
 import net.manaz.vtp.seed.ServerSeedStore;
+import net.manaz.vtp.trade.TargetCatalog;
 import net.manaz.vtp.trade.TradeDataLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ServerData;
@@ -124,7 +125,7 @@ public class VtpCommand {
                                                    )
                                              ))
                                           .then(
-                                             ((LiteralArgumentBuilder)((LiteralArgumentBuilder)((LiteralArgumentBuilder)ClientCommandManager.literal("target")
+                                             ((LiteralArgumentBuilder)((LiteralArgumentBuilder)((LiteralArgumentBuilder)withTargetKinds(ClientCommandManager.literal("target"))
                                                          .then(ClientCommandManager.literal("clear").executes(ctx -> {
                                                             VillagerHudRenderer.clearTargets();
                                                             VtpPersistence.saveCurrentWorldState();
@@ -148,10 +149,7 @@ public class VtpCommand {
                                                                            ((FabricClientCommandSource)ctx.getSource())
                                                                               .sendFeedback(
                                                                                  Component.literal(
-                                                                                    "[VTP] Removed target: "
-                                                                                       + removed.enchantmentKey().identifier().getPath()
-                                                                                       + " "
-                                                                                       + removed.minLevel()
+                                                                                    "[VTP] Removed target: " + removed.label()
                                                                                  )
                                                                               );
                                                                            return 1;
@@ -199,7 +197,7 @@ public class VtpCommand {
                                                       List<EnchantmentTarget> tgts = VillagerHudRenderer.getTargets();
                                                       if (tgts.isEmpty()) {
                                                          ((FabricClientCommandSource)ctx.getSource())
-                                                            .sendFeedback(Component.literal("[VTP] No targets set. Use /vtp target <enchantment> [level]"));
+                                                            .sendFeedback(Component.literal("[VTP] No targets set. Use /vtp target <enchantment> [level], or /vtp target gear|stew|arrow|trade ..."));
                                                       } else {
                                                          StringBuilder sb = new StringBuilder("[VTP] Active targets:");
 
@@ -208,9 +206,7 @@ public class VtpCommand {
                                                             sb.append("\n  ")
                                                                .append(i + 1)
                                                                .append(". ")
-                                                               .append(t.enchantmentKey().identifier().getPath())
-                                                               .append(' ')
-                                                               .append(t.minLevel());
+                                                               .append(t.label());
                                                             if (t.maxPrice() >= 0) {
                                                                sb.append(" (max ").append(t.maxPrice()).append(" em)");
                                                             }
@@ -402,7 +398,7 @@ public class VtpCommand {
 
                         for (int i = 0; i < tgts.size(); i++) {
                            EnchantmentTarget t = tgts.get(i);
-                           sb.append("\n    ").append(i + 1).append(". ").append(t.enchantmentKey().identifier().getPath()).append(' ').append(t.minLevel());
+                           sb.append("\n    ").append(i + 1).append(". ").append(t.label());
                            if (t.maxPrice() >= 0) {
                               sb.append(" (max ").append(t.maxPrice()).append(" em)");
                            }
@@ -588,6 +584,125 @@ public class VtpCommand {
       } else {
          source.sendFeedback(Component.literal("[VTP] Look at a villager first."));
          return 0;
+      }
+   }
+
+   private static SuggestionProvider<FabricClientCommandSource> suggest(java.util.function.Supplier<List<String>> ids) {
+      return (ctx, builder) -> {
+         String remaining = builder.getRemaining().toLowerCase(Locale.ROOT);
+
+         for (String id : ids.get()) {
+            String name = id.substring(id.indexOf(':') + 1);
+            if (name.startsWith(remaining)) {
+               builder.suggest(name);
+            }
+         }
+
+         return builder.buildFuture();
+      };
+   }
+
+   private static List<String> gearEnchantmentIds() {
+      return TargetCatalog.gearEnchantments().stream().flatMap(h -> h.unwrapKey().stream()).map(k -> k.identifier().toString()).toList();
+   }
+
+   private static List<String> gearItemIds() {
+      List<String> items = new ArrayList<>(TargetCatalog.gearItems());
+      items.addFirst("minecraft:any");
+      return items;
+   }
+
+   private static String qualified(String name) {
+      return name.contains(":") ? name : "minecraft:" + name;
+   }
+
+   /** Adds {@code gear}, {@code stew}, {@code arrow} and {@code trade} target kinds under /vtp target. */
+   private static LiteralArgumentBuilder<FabricClientCommandSource> withTargetKinds(LiteralArgumentBuilder<FabricClientCommandSource> target) {
+      return target.then(
+            ClientCommandManager.literal("gear")
+               .then(
+                  ClientCommandManager.argument("enchantment", StringArgumentType.word())
+                     .suggests(suggest(VtpCommand::gearEnchantmentIds))
+                     .executes(ctx -> addGear(ctx.getSource(), StringArgumentType.getString(ctx, "enchantment"), 1, "any"))
+                     .then(
+                        ClientCommandManager.argument("level", IntegerArgumentType.integer(1, 10))
+                           .executes(ctx -> addGear(ctx.getSource(), StringArgumentType.getString(ctx, "enchantment"), IntegerArgumentType.getInteger(ctx, "level"), "any"))
+                           .then(
+                              ClientCommandManager.argument("item", StringArgumentType.word())
+                                 .suggests(suggest(VtpCommand::gearItemIds))
+                                 .executes(
+                                    ctx -> addGear(
+                                       ctx.getSource(),
+                                       StringArgumentType.getString(ctx, "enchantment"),
+                                       IntegerArgumentType.getInteger(ctx, "level"),
+                                       StringArgumentType.getString(ctx, "item")
+                                    )
+                                 )
+                           )
+                     )
+               )
+         )
+         .then(
+            ClientCommandManager.literal("stew")
+               .then(
+                  ClientCommandManager.argument("effect", StringArgumentType.word())
+                     .suggests(suggest(TargetCatalog::stewEffects))
+                     .executes(ctx -> addSimple(ctx.getSource(), EnchantmentTarget.Kind.STEW, StringArgumentType.getString(ctx, "effect"), TargetCatalog.stewEffects()))
+               )
+         )
+         .then(
+            ClientCommandManager.literal("arrow")
+               .then(
+                  ClientCommandManager.argument("potion", StringArgumentType.word())
+                     .suggests(suggest(TargetCatalog::arrowPotions))
+                     .executes(ctx -> addSimple(ctx.getSource(), EnchantmentTarget.Kind.ARROW, StringArgumentType.getString(ctx, "potion"), TargetCatalog.arrowPotions()))
+               )
+         )
+         .then(
+            ClientCommandManager.literal("trade")
+               .then(
+                  ClientCommandManager.argument("item", StringArgumentType.word())
+                     .suggests(suggest(TargetCatalog::tradeItems))
+                     .executes(ctx -> addSimple(ctx.getSource(), EnchantmentTarget.Kind.TRADE, StringArgumentType.getString(ctx, "item"), TargetCatalog.tradeItems()))
+               )
+         );
+   }
+
+   private static int addGear(FabricClientCommandSource source, String enchantment, int level, String item) {
+      String enchantmentId = qualified(enchantment);
+      if (!gearEnchantmentIds().contains(enchantmentId)) {
+         source.sendFeedback(Component.literal("[VTP] Villagers never put " + enchantment + " on traded gear."));
+         return 0;
+      } else {
+         String itemId = item.equals("any") ? "" : qualified(item);
+         if (!itemId.isEmpty() && !TargetCatalog.gearItems().contains(itemId)) {
+            source.sendFeedback(Component.literal("[VTP] No villager sells enchanted " + item + "."));
+            return 0;
+         } else {
+            EnchantmentTarget target = EnchantmentTarget.gear(ResourceKey.create(Registries.ENCHANTMENT, Identifier.parse(enchantmentId)), level, -1, itemId);
+            VillagerHudRenderer.addTarget(target);
+            VtpPersistence.saveCurrentWorldState();
+            source.sendFeedback(Component.literal("[VTP] Target added: " + target.label()));
+            return 1;
+         }
+      }
+   }
+
+   private static int addSimple(FabricClientCommandSource source, EnchantmentTarget.Kind kind, String name, List<String> allowed) {
+      String id = qualified(name);
+      if (!allowed.contains(id)) {
+         source.sendFeedback(Component.literal("[VTP] No villager trade offers " + name + "."));
+         return 0;
+      } else {
+         EnchantmentTarget target = switch (kind) {
+            case STEW -> EnchantmentTarget.stew(id);
+            case ARROW -> EnchantmentTarget.arrow(id, -1);
+            default -> EnchantmentTarget.trade(id);
+         };
+         VillagerHudRenderer.addTarget(target);
+         VtpPersistence.saveCurrentWorldState();
+         source.sendFeedback(Component.literal("[VTP] Target added: " + target.label()));
+         return 1;
       }
    }
 

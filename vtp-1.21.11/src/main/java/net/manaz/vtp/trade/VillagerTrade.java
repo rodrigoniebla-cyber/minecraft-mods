@@ -15,8 +15,8 @@ import net.minecraft.world.item.Items;
 
 /**
  * Client-side copy of a Minecraft 26.2 {@code villager_trade} definition.
- * Only the parts that influence the generated offer are modelled; the raw JSON is kept so
- * {@link TradeSimulator#compatibilityProblem} can reject anything the simulator cannot reproduce.
+ * The raw JSON is kept so {@link TradeSimulator} can apply the item modifiers exactly as the server
+ * does and reject anything it cannot reproduce.
  */
 public final class VillagerTrade {
    private final Identifier id;
@@ -27,6 +27,7 @@ public final class VillagerTrade {
    private final List<JsonElement> itemModifiers;
    private final Optional<EnchantRandomly> enchantRandomly;
    private final Optional<JsonElement> doubleTradePriceEnchantments;
+   private final Optional<JsonObject> merchantPredicate;
 
    private VillagerTrade(
       Identifier id,
@@ -36,7 +37,8 @@ public final class VillagerTrade {
       ItemTemplate gives,
       List<JsonElement> itemModifiers,
       Optional<EnchantRandomly> enchantRandomly,
-      Optional<JsonElement> doubleTradePriceEnchantments
+      Optional<JsonElement> doubleTradePriceEnchantments,
+      Optional<JsonObject> merchantPredicate
    ) {
       this.id = id;
       this.json = json;
@@ -46,6 +48,7 @@ public final class VillagerTrade {
       this.itemModifiers = itemModifiers;
       this.enchantRandomly = enchantRandomly;
       this.doubleTradePriceEnchantments = doubleTradePriceEnchantments;
+      this.merchantPredicate = merchantPredicate;
    }
 
    public static VillagerTrade parse(Identifier id, JsonObject json) {
@@ -76,7 +79,15 @@ public final class VillagerTrade {
       }
 
       return new VillagerTrade(
-         id, json, wants, additional, gives, List.copyOf(modifiers), enchant, Optional.ofNullable(json.get("double_trade_price_enchantments"))
+         id,
+         json,
+         wants,
+         additional,
+         gives,
+         List.copyOf(modifiers),
+         enchant,
+         Optional.ofNullable(json.get("double_trade_price_enchantments")),
+         json.has("merchant_predicate") && json.get("merchant_predicate").isJsonObject() ? Optional.of(json.getAsJsonObject("merchant_predicate")) : Optional.empty()
       );
    }
 
@@ -148,6 +159,20 @@ public final class VillagerTrade {
       return this.doubleTradePriceEnchantments;
    }
 
+   public Optional<JsonObject> merchantPredicate() {
+      return this.merchantPredicate;
+   }
+
+   /** Whether this trade's availability depends on the villager's biome type. */
+   public boolean dependsOnVillagerType() {
+      return this.merchantPredicate.isPresent();
+   }
+
+   /** Number provider for a field the server evaluates when it builds the offer (max_uses, xp, reputation_discount). */
+   public Optional<JsonElement> offerValue(String field) {
+      return Optional.ofNullable(this.json.get(field));
+   }
+
    @Override
    public String toString() {
       return "VillagerTrade[" + this.id + "]";
@@ -156,6 +181,10 @@ public final class VillagerTrade {
    static Optional<Item> item(String id) {
       Identifier identifier = Identifier.tryParse(id);
       return identifier == null ? Optional.empty() : BuiltInRegistries.ITEM.getOptional(identifier);
+   }
+
+   static int maxStackSize(String id) {
+      return item(id).map(Item::getDefaultMaxStackSize).orElse(64);
    }
 
    /** {@code options} is a tag ("#..."), a single id, or a list of ids, exactly as in the JSON. */
@@ -171,6 +200,10 @@ public final class VillagerTrade {
          return this.count == null || Numbers.isConstant(this.count);
       }
 
+      public boolean hasSupportedCount() {
+         return this.count == null || Numbers.isSupported(this.count);
+      }
+
       public int baseCount() {
          return this.count == null ? 1 : Numbers.constantInt(this.count);
       }
@@ -181,8 +214,13 @@ public final class VillagerTrade {
 
       /** Mirrors 26.2 {@code TradeCost.toItemCost}: clamp(count + additional, 0, max stack size). */
       public int toItemCount(int additionalCost) {
-         int maxStack = VillagerTrade.item(this.itemId).map(Item::getDefaultMaxStackSize).orElse(64);
-         return Mth.clamp(this.baseCount() + additionalCost, 0, maxStack);
+         return Mth.clamp(this.baseCount() + additionalCost, 0, VillagerTrade.maxStackSize(this.itemId));
+      }
+
+      /** As {@link #toItemCount(int)}, drawing a random count from the sequence when the count is random. */
+      public int toItemCount(int additionalCost, net.manaz.vtp.rng.SimulatedRandomSource random) {
+         int base = this.count == null ? 1 : Numbers.getInt(this.count, random);
+         return Mth.clamp(base + additionalCost, 0, VillagerTrade.maxStackSize(this.itemId));
       }
 
       public ItemStack displayStack() {

@@ -21,6 +21,9 @@ import net.manaz.vtp.render.VillagerHudRenderer;
 import net.manaz.vtp.render.VillagerTracker;
 import net.manaz.vtp.seed.SeedProvider;
 import net.manaz.vtp.trade.TradeDataLoader;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.manaz.vtp.render.OfferText;
+import net.manaz.vtp.trade.TargetCatalog;
 import net.manaz.vtp.trade.TradePrices;
 import net.manaz.vtp.trade.TradeSimulator;
 import net.minecraft.client.Minecraft;
@@ -63,6 +66,11 @@ public class VtpSettingsScreen extends Screen {
       "weaponsmith"
    };
    private static int lastTab;
+   private static final String[] TARGET_KINDS = new String[]{"Books", "Gear", "Stew", "Arrow", "Trade"};
+   private static int lastTargetKind;
+   private int targetKind = lastTargetKind;
+   private String chosenId;
+   private int gearItemIndex;
    private int tab;
    private int wx;
    private int wy;
@@ -294,35 +302,86 @@ public class VtpSettingsScreen extends Screen {
    }
 
    private void loadEnchantments() {
-      this.enchantments = new ArrayList<>(TradeDataLoader.getTradeableEnchantments());
+      this.enchantments = new ArrayList<>(this.targetKind == 1 ? TargetCatalog.gearEnchantments() : TradeDataLoader.getTradeableEnchantments());
       this.enchantments.sort(Comparator.comparing(h -> ((Enchantment)h.value()).description().getString()));
    }
 
    private void picker() {
       this.loadEnchantments();
-      this.input("Search enchantments", this.query, "Search enchantments", this.left, this.top, this.column, value -> {
+      int kindWidth = (this.column - 8) / TARGET_KINDS.length;
+
+      for (int i = 0; i < TARGET_KINDS.length; i++) {
+         int kind = i;
+         VtpButton choice = this.button(
+            TARGET_KINDS[i], this.left + i * (kindWidth + 2), this.top, i == TARGET_KINDS.length - 1 ? this.column - i * (kindWidth + 2) : kindWidth, () -> {
+               this.targetKind = kind;
+               lastTargetKind = kind;
+               this.chosen = null;
+               this.chosenId = null;
+               this.query = "";
+               this.scrolls.remove("enchants");
+               this.rebuildWidgets();
+            }
+         );
+         choice.active = i != this.targetKind;
+         choice.selected(i == this.targetKind);
+      }
+
+      this.input("Search", this.query, "Search", this.left, this.top + 22, this.column, value -> {
          this.query = value;
          this.scrolls.remove("enchants");
          this.lists.get("enchants").offset(0);
          this.enchantRows();
       });
-      this.list("enchants", this.left, this.top + 26, this.column, this.bottom - this.top - 26, "Enchantments");
+      this.list("enchants", this.left, this.top + 48, this.column, this.bottom - this.top - 48, TARGET_KINDS[this.targetKind]);
       this.enchantRows();
+   }
+
+   private boolean enchantmentKind() {
+      return this.targetKind == 0 || this.targetKind == 1;
+   }
+
+   private List<String> idOptions() {
+      return switch (this.targetKind) {
+         case 2 -> TargetCatalog.stewEffects();
+         case 3 -> TargetCatalog.arrowPotions();
+         default -> TargetCatalog.tradeItems();
+      };
+   }
+
+   private ItemStack idIcon(String id) {
+      return switch (this.targetKind) {
+         case 2 -> VtpIcons.of(Items.SUSPICIOUS_STEW);
+         case 3 -> VtpIcons.of(Items.TIPPED_ARROW);
+         default -> VtpIcons.of(BuiltInRegistries.ITEM.getValue(Identifier.parse(id)));
+      };
    }
 
    private void enchantRows() {
       String filter = this.query.toLowerCase(Locale.ROOT).trim();
       List<VtpList.Entry> entries = new ArrayList<>();
-
-      for (Holder<Enchantment> enchant : this.enchantments) {
-         String name = ((Enchantment)enchant.value()).description().getString();
-         if (name.toLowerCase(Locale.ROOT).contains(filter)) {
-            entries.add(new VtpList.Entry(name, "", VtpIcons.book(), List.of(), name, Objects.equals(enchant, this.chosen), () -> {
-               this.chosen = enchant;
-               this.chosenLevel = Math.min(this.chosenLevel, ((Enchantment)enchant.value()).getMaxLevel());
-               this.updateTargetControls();
-               this.enchantRows();
-            }));
+      if (this.enchantmentKind()) {
+         for (Holder<Enchantment> enchant : this.enchantments) {
+            String name = ((Enchantment)enchant.value()).description().getString();
+            if (name.toLowerCase(Locale.ROOT).contains(filter)) {
+               entries.add(new VtpList.Entry(name, "", this.targetKind == 1 ? VtpIcons.of(Items.DIAMOND_CHESTPLATE) : VtpIcons.book(), List.of(), name, Objects.equals(enchant, this.chosen), () -> {
+                  this.chosen = enchant;
+                  this.chosenLevel = Math.min(this.chosenLevel, ((Enchantment)enchant.value()).getMaxLevel());
+                  this.updateTargetControls();
+                  this.enchantRows();
+               }));
+            }
+         }
+      } else {
+         for (String id : this.idOptions()) {
+            String name = VtpUi.name(id);
+            if (name.toLowerCase(Locale.ROOT).contains(filter)) {
+               entries.add(new VtpList.Entry(name, "", this.idIcon(id), List.of(), name, id.equals(this.chosenId), () -> {
+                  this.chosenId = id;
+                  this.updateTargetControls();
+                  this.enchantRows();
+               }));
+            }
          }
       }
 
@@ -343,6 +402,17 @@ public class VtpSettingsScreen extends Screen {
          this.targetLevelButtons.add(choice);
       }
 
+      if (this.targetKind == 1) {
+         List<String> items = TargetCatalog.gearItems();
+         this.gearItemIndex = Math.clamp(this.gearItemIndex, 0, items.size());
+         VtpButton itemButton = this.button(this.gearItemLabel(), this.right, this.top + 24, this.column, () -> {
+            this.gearItemIndex = (this.gearItemIndex + 1) % (TargetCatalog.gearItems().size() + 1);
+            this.rebuildWidgets();
+         });
+         itemButton.setTooltip(Tooltip.create(Component.literal("Which item must carry the enchantment. Click to cycle.")));
+      }
+
+      if (this.targetKind == 0) {
       this.priceSlider = (VtpSlider)this.addRenderableWidget(
          new VtpSlider(
             this.right,
@@ -370,22 +440,56 @@ public class VtpSettingsScreen extends Screen {
          }
       });
       this.priceBox.setMaxLength(2);
+      }
+
       this.addButton = this.button("Add target", this.right, this.top + 48, this.column, () -> {
-         if (this.availableTargetLevel(this.chosenLevel)) {
-            Integer p = this.targetPriceValue();
-            if (p != null) {
-               VillagerHudRenderer.addTarget(new EnchantmentTarget((ResourceKey<Enchantment>)this.chosen.unwrapKey().orElseThrow(), this.chosenLevel, p));
-               VtpPersistence.saveCurrentWorldState();
-               this.targetRows();
-               this.message = "Target added.";
-            }
+         EnchantmentTarget target = this.pendingTarget();
+         if (target != null) {
+            VillagerHudRenderer.addTarget(target);
+            VtpPersistence.saveCurrentWorldState();
+            this.targetRows();
+            this.message = "Target added.";
          }
       });
       this.updateTargetControls();
    }
 
+   private String gearItemLabel() {
+      List<String> items = TargetCatalog.gearItems();
+      return "Item: " + (this.gearItemIndex == 0 || this.gearItemIndex > items.size() ? "Any" : VtpUi.name(items.get(this.gearItemIndex - 1)));
+   }
+
+   private EnchantmentTarget pendingTarget() {
+      switch (this.targetKind) {
+         case 0:
+            if (this.availableTargetLevel(this.chosenLevel)) {
+               Integer p = this.targetPriceValue();
+               if (p != null) {
+                  return new EnchantmentTarget((ResourceKey<Enchantment>)this.chosen.unwrapKey().orElseThrow(), this.chosenLevel, p);
+               }
+            }
+
+            return null;
+         case 1:
+            if (this.availableTargetLevel(this.chosenLevel)) {
+               List<String> items = TargetCatalog.gearItems();
+               String item = this.gearItemIndex == 0 || this.gearItemIndex > items.size() ? "" : items.get(this.gearItemIndex - 1);
+               return EnchantmentTarget.gear((ResourceKey<Enchantment>)this.chosen.unwrapKey().orElseThrow(), this.chosenLevel, -1, item);
+            }
+
+            return null;
+         case 2:
+            return this.chosenId == null ? null : EnchantmentTarget.stew(this.chosenId);
+         case 3:
+            return this.chosenId == null ? null : EnchantmentTarget.arrow(this.chosenId, -1);
+         default:
+            return this.chosenId == null ? null : EnchantmentTarget.trade(this.chosenId);
+      }
+   }
+
    private boolean availableTargetLevel(int level) {
-      return this.chosen != null
+      return this.enchantmentKind()
+         && this.chosen != null
          && level >= 1
          && level <= 5
          && level >= ((Enchantment)this.chosen.value()).getMinLevel()
@@ -410,7 +514,9 @@ public class VtpSettingsScreen extends Screen {
          choice.setTooltip(
             Tooltip.create(
                Component.literal(
-                  this.chosen == null
+                  !this.enchantmentKind()
+                     ? "No level for this kind of target."
+                     : this.chosen == null
                      ? "Select an enchantment first."
                      : "Level " + VillagerHudRenderer.fmtLvl(level) + (choice.active ? "" : " is unavailable for this enchantment.")
                )
@@ -418,7 +524,7 @@ public class VtpSettingsScreen extends Screen {
          );
       }
 
-      this.minimumPrice = TradePrices.cheapest(this.chosen, this.chosenLevel);
+      this.minimumPrice = this.targetKind == 0 ? TradePrices.cheapest(this.chosen, this.chosenLevel) : OptionalInt.empty();
       if (this.cheapestPrice) {
          this.targetPrice = this.minimumPrice.isPresent() ? String.valueOf(this.minimumPrice.getAsInt()) : "";
       }
@@ -478,15 +584,9 @@ public class VtpSettingsScreen extends Screen {
 
    private void updateAddTarget() {
       if (this.addButton != null) {
-         this.addButton.active = this.availableTargetLevel(this.chosenLevel) && this.targetPriceValue() != null;
-         this.addButton
-            .setTooltip(
-               this.chosen == null
-                  ? Tooltip.create(Component.literal("Select an enchantment first."))
-                  : Tooltip.create(
-                     Component.literal(((Enchantment)this.chosen.value()).description().getString() + " " + VillagerHudRenderer.fmtLvl(this.chosenLevel))
-                  )
-            );
+         EnchantmentTarget target = this.pendingTarget();
+         this.addButton.active = target != null;
+         this.addButton.setTooltip(Tooltip.create(Component.literal(target == null ? "Select something to target first." : target.label())));
       }
    }
 
@@ -530,15 +630,25 @@ public class VtpSettingsScreen extends Screen {
       for (int i = 0; i < targets.size(); i++) {
          int index = i;
          EnchantmentTarget target = targets.get(i);
-         String text = VtpUi.name(target.enchantmentKey().identifier().toString()) + " " + VillagerHudRenderer.fmtLvl(target.minLevel());
+         String text = target.label();
          String hint = text + (target.maxPrice() >= 0 ? "\nMaximum base price: " + target.maxPrice() + " emeralds" : "\nAny base price");
-         entries.add(new VtpList.Entry(text, "", VtpIcons.book(), List.of(), hint, i == this.targetIndex, () -> {
+         entries.add(new VtpList.Entry(text, "", targetIcon(target), List.of(), hint, i == this.targetIndex, () -> {
             this.targetIndex = index;
             this.targetRows();
          }));
       }
 
       this.rows("targets", entries);
+   }
+
+   private static ItemStack targetIcon(EnchantmentTarget target) {
+      return switch (target.kind()) {
+         case BOOK -> VtpIcons.book();
+         case GEAR -> VtpIcons.of(target.id().isEmpty() ? Items.DIAMOND_CHESTPLATE : BuiltInRegistries.ITEM.getValue(Identifier.parse(target.id())));
+         case STEW -> VtpIcons.of(Items.SUSPICIOUS_STEW);
+         case ARROW -> VtpIcons.of(Items.TIPPED_ARROW);
+         case TRADE -> VtpIcons.of(BuiltInRegistries.ITEM.getValue(Identifier.parse(target.id())));
+      };
    }
 
    private void sequence() {
@@ -587,7 +697,7 @@ public class VtpSettingsScreen extends Screen {
       VillagerData data = VillagerTracker.getLastVillagerData().orElse(null);
       if (data != null && SeedProvider.hasSeed()) {
          long seed = SeedProvider.getSeed().orElseThrow();
-         List<List<TradeSimulator.SimulatedOffer>> future = PredictionEngine.getForecastRounds(seed, data.profession(), this.sequenceLevel, 50);
+         List<List<TradeSimulator.SimulatedOffer>> future = PredictionEngine.getForecastRounds(seed, data, this.sequenceLevel, 50);
          List<VtpList.Entry> entries = new ArrayList<>();
          UUID uuid = VillagerTracker.getLastVillagerUuid();
          boolean sameLevel = data.level() == this.sequenceLevel;
@@ -640,16 +750,18 @@ public class VtpSettingsScreen extends Screen {
    }
 
    private void addRound(List<VtpList.Entry> entries, String prefix, List<TradeSimulator.SimulatedOffer> offers, String hint) {
-      for (HudView.Row row : HudView.bookRows(prefix, offers, true)) {
+      List<OfferText.Highlight> highlights = offers == null ? List.of() : OfferText.highlights(offers);
+      if (highlights.isEmpty()) {
+         String text = offers == null ? "…" : "—";
+         entries.add(new VtpList.Entry(prefix + "   " + text, "", VtpIcons.of(Items.BOOK), List.of(), prefix + ": " + text + "\n" + hint, false, null));
+      }
+
+      for (OfferText.Highlight row : highlights) {
+         TradeSimulator.Rolled rolled = row.offer().rolled();
+         ItemStack icon = rolled == null ? VtpIcons.book() : VtpIcons.of(BuiltInRegistries.ITEM.getValue(Identifier.parse(rolled.result())));
          entries.add(
             new VtpList.Entry(
-               prefix + "   " + row.text(),
-               row.price() >= 0 ? row.price() + " em" : "",
-               row.text().equals("—") ? VtpIcons.of(Items.BOOK) : VtpIcons.book(),
-               List.of(),
-               prefix + ": " + row.text() + "\n" + hint,
-               row.match(),
-               null
+               prefix + "   " + row.text(), row.price() >= 0 ? row.price() + " em" : "", icon, List.of(), prefix + ": " + row.text() + "\n" + hint, row.match(), null
             )
          );
       }

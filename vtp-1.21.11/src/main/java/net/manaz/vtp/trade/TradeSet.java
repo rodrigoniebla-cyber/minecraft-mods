@@ -36,6 +36,10 @@ public final class TradeSet {
       return this.trades;
    }
 
+   public JsonElement amountProvider() {
+      return this.amount;
+   }
+
    public boolean hasConstantAmount() {
       return Numbers.isConstant(this.amount);
    }

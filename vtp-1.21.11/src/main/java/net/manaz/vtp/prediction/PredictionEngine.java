@@ -19,6 +19,7 @@ import net.manaz.vtp.rng.SimulatedRandomSource;
 import net.manaz.vtp.rng.SimulatedXoroshiro128PlusPlus;
 import net.manaz.vtp.seed.SeedProvider;
 import net.manaz.vtp.trade.ObservedOffer;
+import net.manaz.vtp.trade.TargetCatalog;
 import net.manaz.vtp.trade.TradeDataLoader;
 import net.manaz.vtp.trade.TradeSimulator;
 import net.minecraft.client.Minecraft;
@@ -57,6 +58,55 @@ public final class PredictionEngine {
       }
    };
 
+   private static final Map<PredictionEngine.LevelKey, Optional<PredictionEngine.LevelPlan>> levelCache = new HashMap<>();
+
+   /** The next round of a higher villager level that has the target: {@code skips} other level-ups must come first. */
+   public record LevelPlan(int level, int skips, List<TradeSimulator.SimulatedOffer> offers) {
+   }
+
+   private record LevelKey(long seed, VillagerData data, EnchantmentTarget target, int max) {
+   }
+
+   /** Whether this profession level's trades can ever satisfy the target. */
+   public static boolean canProduce(Holder<VillagerProfession> profession, int level, EnchantmentTarget target) {
+      ResourceKey<TradeSet> key = TradeDataLoader.getTradeSetKey(profession, level);
+      return key != null && TradeDataLoader.getTradeSet(key).filter(set -> TargetCatalog.canProduce(set, target)).isPresent();
+   }
+
+   /**
+    * For targets the villager can only get by levelling up: the first higher level whose upcoming
+    * rounds contain the target. Trades for a level are rolled from that level's shared sequence when
+    * a villager reaches it, so {@code skips} counts other villagers of this profession that must reach
+    * that level first.
+    */
+   public static Optional<PredictionEngine.LevelPlan> predictLevelUp(long seed, VillagerData data, EnchantmentTarget target) {
+      PredictionEngine.LevelKey key = new PredictionEngine.LevelKey(seed, data, target, maxRerolls);
+      Optional<PredictionEngine.LevelPlan> cached = levelCache.get(key);
+      if (cached != null) {
+         return cached;
+      } else if (!preparing) {
+         return Optional.empty();
+      } else {
+         Optional<PredictionEngine.LevelPlan> plan = Optional.empty();
+
+         for (int level = Math.max(2, data.level() + 1); level <= 5 && plan.isEmpty(); level++) {
+            if (canProduce(data.profession(), level, target) && compatibilityProblem(data.profession(), level).isEmpty()) {
+               List<List<TradeSimulator.SimulatedOffer>> rounds = getForecastRounds(seed, data, level, maxRerolls);
+
+               for (int i = 0; i < rounds.size(); i++) {
+                  if (matchesTarget(rounds.get(i), target)) {
+                     plan = Optional.of(new PredictionEngine.LevelPlan(level, i, rounds.get(i)));
+                     break;
+                  }
+               }
+            }
+         }
+
+         levelCache.put(key, plan);
+         return plan;
+      }
+   }
+
    public static long revision() {
       return revision;
    }
@@ -64,6 +114,7 @@ public final class PredictionEngine {
    public static void changed() {
       revision++;
       targetCache.clear();
+      levelCache.clear();
    }
 
    public static void setMaxRerolls(int max) {
@@ -127,50 +178,58 @@ public final class PredictionEngine {
       }
    }
 
-   public static List<List<TradeSimulator.SimulatedOffer>> getUpcomingRounds(long seed, Holder<VillagerProfession> profession, int level, int start, int count) {
+   /** Biome type of the villager; it decides which conditional trades a trade set can offer. */
+   public static String villagerType(VillagerData data) {
+      return data.type().unwrapKey().map(k -> k.identifier().toString()).orElse("minecraft:plains");
+   }
+
+   public static List<List<TradeSimulator.SimulatedOffer>> getUpcomingRounds(long seed, VillagerData data, int level, int start, int count) {
+      Holder<VillagerProfession> profession = data.profession();
       if (start >= 0 && start <= 1000000 && count > 0 && compatibilityProblem(profession, level).isEmpty()) {
          ResourceKey<TradeSet> key = TradeDataLoader.getTradeSetKey(profession, level);
          TradeSet set = TradeDataLoader.getTradeSet(key).orElseThrow();
          SimulatedXoroshiro128PlusPlus initial = RandomSequenceSimulator.createForSequence(seed, ((Identifier)set.randomSequence().orElseThrow()).toString())
             .getInternalRng();
-         return read(seed, key, set, new SingleplayerSequences.Seed(initial.getSeedLo(), initial.getSeedHi()), start, count);
+         return read(seed, key, set, villagerType(data), new SingleplayerSequences.Seed(initial.getSeedLo(), initial.getSeedHi()), start, count);
       } else {
          return List.of();
       }
    }
 
    private static List<List<TradeSimulator.SimulatedOffer>> read(
-      long seed, ResourceKey<TradeSet> key, TradeSet set, SingleplayerSequences.Seed state, int start, int count
+      long seed, ResourceKey<TradeSet> key, TradeSet set, String villagerType, SingleplayerSequences.Seed state, int start, int count
    ) {
       int bounded = Math.min(Math.min(count, 20000), 1000000 - start + 1);
+      String type = TradeSimulator.dependsOnVillagerType(set) ? villagerType : "";
       return timelines.computeIfAbsent(
-            new PredictionEngine.TimelineKey(seed, key, set, state.lo(), state.hi()), ignored -> new PredictionEngine.Timeline(set, state)
+            new PredictionEngine.TimelineKey(seed, key, set, type, state.lo(), state.hi()), ignored -> new PredictionEngine.Timeline(set, type, state)
          )
          .read(start, bounded);
    }
 
-   public static List<List<TradeSimulator.SimulatedOffer>> getForecastRounds(long seed, Holder<VillagerProfession> profession, int level, int count) {
+   public static List<List<TradeSimulator.SimulatedOffer>> getForecastRounds(long seed, VillagerData data, int level, int count) {
+      Holder<VillagerProfession> profession = data.profession();
       if (!compatibilityProblem(profession, level).isEmpty()) {
          return List.of();
       } else {
          ResourceKey<TradeSet> key = TradeDataLoader.getTradeSetKey(profession, level);
          if (Minecraft.getInstance().getSingleplayerServer() != null) {
             Optional<SingleplayerSequences.Seed> snapshot = SingleplayerSequences.get(key);
-            return snapshot.isEmpty() ? List.of() : read(seed, key, TradeDataLoader.getTradeSet(key).orElseThrow(), snapshot.get(), 0, count);
+            return snapshot.isEmpty() ? List.of() : read(seed, key, TradeDataLoader.getTradeSet(key).orElseThrow(), villagerType(data), snapshot.get(), 0, count);
          } else {
-            return getUpcomingRounds(seed, profession, level, VillagerTracker.getNextRoundForLevel(profession, level), count);
+            return getUpcomingRounds(seed, data, level, VillagerTracker.getNextRoundForLevel(profession, level), count);
          }
       }
    }
 
-   public static List<TradeSimulator.SimulatedOffer> simulateRound(long seed, Holder<VillagerProfession> profession, int level, int round) {
-      List<List<TradeSimulator.SimulatedOffer>> rounds = getUpcomingRounds(seed, profession, level, round, 1);
+   public static List<TradeSimulator.SimulatedOffer> simulateRound(long seed, VillagerData data, int level, int round) {
+      List<List<TradeSimulator.SimulatedOffer>> rounds = getUpcomingRounds(seed, data, level, round, 1);
       return rounds.isEmpty() ? List.of() : rounds.getFirst();
    }
 
-   public static PredictionResult predictFrom(long seed, Holder<VillagerProfession> profession, int level, EnchantmentTarget target, int startRound) {
-      if (startRound >= 0 && startRound <= 1000000 && compatibilityProblem(profession, level).isEmpty()) {
-         List<List<TradeSimulator.SimulatedOffer>> rounds = getUpcomingRounds(seed, profession, level, startRound, maxRerolls);
+   public static PredictionResult predictFrom(long seed, VillagerData data, int level, EnchantmentTarget target, int startRound) {
+      if (startRound >= 0 && startRound <= 1000000 && compatibilityProblem(data.profession(), level).isEmpty()) {
+         List<List<TradeSimulator.SimulatedOffer>> rounds = getUpcomingRounds(seed, data, level, startRound, maxRerolls);
          List<TradeSimulator.SimulatedOffer> first = rounds.isEmpty() ? List.of() : rounds.getFirst();
 
          for (int i = 0; i < rounds.size(); i++) {
@@ -191,7 +250,7 @@ public final class PredictionEngine {
       List<TradeSimulator.SimulatedOffer> actual = VillagerTracker.getCurrentOffers(uuid).orElse(List.of());
       if (matchesTarget(actual, target)) {
          return new PredictionResult(Optional.of(0), 0, actual, actual);
-      } else if (data.level() <= 1 && !VillagerTracker.isTradeLocked(uuid)) {
+      } else if (data.level() <= 1 && !VillagerTracker.isTradeLocked(uuid) && canProduce(data.profession(), 1, target)) {
          boolean pending = VillagerTracker.isAwaitingOffers(uuid);
          ResourceKey<TradeSet> tradeKey = TradeDataLoader.getTradeSetKey(data.profession(), data.level());
          PredictionEngine.TargetKey cacheKey = new PredictionEngine.TargetKey(
@@ -211,7 +270,7 @@ public final class PredictionEngine {
          } else if (!preparing) {
             return new PredictionResult(Optional.empty(), 0, List.of(), actual);
          } else {
-            List<List<TradeSimulator.SimulatedOffer>> future = getForecastRounds(seed, data.profession(), data.level(), maxRerolls);
+            List<List<TradeSimulator.SimulatedOffer>> future = getForecastRounds(seed, data, data.level(), maxRerolls);
 
             for (int i = 0; i < future.size(); i++) {
                if (matchesTarget(future.get(i), target)) {
@@ -245,11 +304,12 @@ public final class PredictionEngine {
                long seed = SeedProvider.getSeed().orElseThrow();
 
                for (int level = 1; level <= 5; level++) {
-                  getForecastRounds(seed, data.get().profession(), level, 50);
+                  getForecastRounds(seed, data.get(), level, 50);
                }
 
                for (EnchantmentTarget target : VillagerHudRenderer.getTargets()) {
                   predictForVillager(seed, uuid, data.get(), target);
+                  predictLevelUp(seed, data.get(), target);
                }
 
                preparedRevision = revision;
@@ -261,19 +321,19 @@ public final class PredictionEngine {
       }
    }
 
-   private static boolean matchesTarget(List<TradeSimulator.SimulatedOffer> offers, EnchantmentTarget target) {
-      return offers.stream().anyMatch(o -> o.enchantment().filter(e -> target.matches(e.enchantment(), e.level(), e.emeraldPrice())).isPresent());
+   public static boolean matchesTarget(List<TradeSimulator.SimulatedOffer> offers, EnchantmentTarget target) {
+      return offers.stream().anyMatch(target::matches);
    }
 
    public static boolean matchesObserved(VillagerData data, int round, List<ObservedOffer> observed) {
-      List<TradeSimulator.SimulatedOffer> predicted = simulateRound(SeedProvider.getSeed().orElseThrow(), data.profession(), data.level(), round);
+      List<TradeSimulator.SimulatedOffer> predicted = simulateRound(SeedProvider.getSeed().orElseThrow(), data, data.level(), round);
       return !predicted.isEmpty() && OfferMatching.same(TradeSimulator.fingerprint(predicted), observed);
    }
 
    public static List<Integer> findObserved(VillagerData data, List<ObservedOffer> observed, int expected) {
       int start = Math.max(0, expected - maxRerolls);
       int count = Math.min(1000000 - start + 1, Math.max(maxRerolls, expected - start + maxRerolls));
-      List<List<TradeSimulator.SimulatedOffer>> rounds = getUpcomingRounds(SeedProvider.getSeed().orElseThrow(), data.profession(), data.level(), start, count);
+      List<List<TradeSimulator.SimulatedOffer>> rounds = getUpcomingRounds(SeedProvider.getSeed().orElseThrow(), data, data.level(), start, count);
       List<Integer> matches = new ArrayList<>();
 
       for (int i = 0; i < rounds.size(); i++) {
@@ -290,13 +350,15 @@ public final class PredictionEngine {
    }
 
    public static List<Integer> findCalibrationSequence(
-      long seed, Holder<VillagerProfession> profession, int level, List<PredictionEngine.CalibrationSpec> specs
+      long seed, VillagerData data, List<PredictionEngine.CalibrationSpec> specs
    ) {
+      Holder<VillagerProfession> profession = data.profession();
+      int level = data.level();
       if (!specs.isEmpty() && specs.size() <= 100) {
          int next = VillagerTracker.getNextRoundForLevel(profession, level);
          int start = Math.max(0, next - maxRerolls);
          int count = Math.min(20000, maxRerolls + next - start + specs.size() - 1);
-         List<List<TradeSimulator.SimulatedOffer>> rounds = getUpcomingRounds(seed, profession, level, start, count);
+         List<List<TradeSimulator.SimulatedOffer>> rounds = getUpcomingRounds(seed, data, level, start, count);
          List<Integer> matches = new ArrayList<>();
 
          for (int i = 0; i + specs.size() <= rounds.size(); i++) {
@@ -366,6 +428,7 @@ public final class PredictionEngine {
 
    private static final class Timeline {
       final TradeSet set;
+      final String villagerType;
       final NavigableMap<Integer, SingleplayerSequences.Seed> checkpoints = new TreeMap<>();
       final Map<Integer, List<TradeSimulator.SimulatedOffer>> rounds = new LinkedHashMap<Integer, List<TradeSimulator.SimulatedOffer>>(1024, 0.75F, true) {
          {
@@ -378,8 +441,9 @@ public final class PredictionEngine {
          }
       };
 
-      Timeline(TradeSet set, SingleplayerSequences.Seed seed) {
+      Timeline(TradeSet set, String villagerType, SingleplayerSequences.Seed seed) {
          this.set = set;
+         this.villagerType = villagerType;
          this.checkpoints.put(0, seed);
       }
 
@@ -404,7 +468,7 @@ public final class PredictionEngine {
                   this.checkpoints.put(ix, new SingleplayerSequences.Seed(state.getSeedLo(), state.getSeedHi()));
                }
 
-               List<TradeSimulator.SimulatedOffer> offers = TradeSimulator.simulateTradeRound(this.set, rng, List.of());
+               List<TradeSimulator.SimulatedOffer> offers = TradeSimulator.simulateTradeRound(this.set, rng, this.villagerType);
                if (ix >= start) {
                   this.rounds.put(ix, offers);
                   result.add(offers);
@@ -422,6 +486,6 @@ public final class PredictionEngine {
       }
    }
 
-   private record TimelineKey(long worldSeed, ResourceKey<TradeSet> key, TradeSet definition, long lo, long hi) {
+   private record TimelineKey(long worldSeed, ResourceKey<TradeSet> key, TradeSet definition, String villagerType, long lo, long hi) {
    }
 }

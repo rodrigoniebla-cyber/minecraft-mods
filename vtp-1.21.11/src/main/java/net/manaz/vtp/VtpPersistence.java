@@ -136,7 +136,7 @@ public final class VtpPersistence {
    public static void save(long seed) {
       if (identity != null) {
          JsonObject root = new JsonObject();
-         root.addProperty("schemaVersion", 3);
+         root.addProperty("schemaVersion", 4);
          root.addProperty("minecraftVersion", TradeDataLoader.DATA_VERSION);
          root.addProperty("seed", seed);
          JsonObject offsets = new JsonObject();
@@ -173,7 +173,7 @@ public final class VtpPersistence {
                restoreTargets(root);
                if (legacy
                   || !root.has("schemaVersion")
-                  || root.get("schemaVersion").getAsInt() != 3
+                  || root.get("schemaVersion").getAsInt() != 4
                   || !root.has("minecraftVersion")
                   || !root.get("minecraftVersion").getAsString().equals(TradeDataLoader.DATA_VERSION)) {
                   VillagerTradingPredictor.LOGGER.info("[VTP] Imported targets only. Old inferred trade state requires fresh observation/calibration.");
@@ -237,7 +237,15 @@ public final class VtpPersistence {
 
       for (EnchantmentTarget target : VillagerHudRenderer.getTargets()) {
          JsonObject json = new JsonObject();
-         json.addProperty("enchantment", target.enchantmentKey().identifier().toString());
+         json.addProperty("kind", target.kind().name());
+         if (target.enchantmentKey() != null) {
+            json.addProperty("enchantment", target.enchantmentKey().identifier().toString());
+         }
+
+         if (!target.id().isEmpty()) {
+            json.addProperty("id", target.id());
+         }
+
          json.addProperty("level", target.minLevel());
          json.addProperty("maxPrice", target.maxPrice());
          result.add(json);
@@ -252,11 +260,14 @@ public final class VtpPersistence {
          for (JsonElement element : root.getAsJsonArray("targets")) {
             try {
                JsonObject value = element.getAsJsonObject();
+               EnchantmentTarget.Kind kind = value.has("kind") ? EnchantmentTarget.Kind.valueOf(value.get("kind").getAsString()) : EnchantmentTarget.Kind.BOOK;
                targets.add(
                   new EnchantmentTarget(
-                     ResourceKey.create(Registries.ENCHANTMENT, Identifier.parse(value.get("enchantment").getAsString())),
+                     kind,
+                     value.has("enchantment") ? ResourceKey.create(Registries.ENCHANTMENT, Identifier.parse(value.get("enchantment").getAsString())) : null,
                      Math.clamp((long)value.get("level").getAsInt(), 1, 255),
-                     value.has("maxPrice") ? value.get("maxPrice").getAsInt() : -1
+                     value.has("maxPrice") ? value.get("maxPrice").getAsInt() : -1,
+                     value.has("id") ? value.get("id").getAsString() : ""
                   )
                );
             } catch (Exception var5) {

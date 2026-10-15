@@ -28,23 +28,15 @@ public final class ForecastView {
             )
             + " [observed]";
       } else if (level > data.level() || level == data.level() && VillagerTracker.isAwaitingOffers(uuid)) {
-         List<List<TradeSimulator.SimulatedOffer>> rounds = PredictionEngine.getForecastRounds(seed, data.profession(), level, 1);
+         List<List<TradeSimulator.SimulatedOffer>> rounds = PredictionEngine.getForecastRounds(seed, data, level, 1);
          if (rounds.isEmpty()) {
             return prefix + "forecast unavailable";
          } else {
-            List<String> books = rounds.getFirst()
+            List<String> books = OfferText.highlights(rounds.getFirst())
                .stream()
-               .flatMap(o -> o.enchantment().stream())
-               .map(
-                  e -> name(((ResourceKey)e.enchantment().unwrapKey().orElseThrow()).identifier().toString())
-                     + " "
-                     + VillagerHudRenderer.fmtLvl(e.level())
-                     + " ("
-                     + e.emeraldPrice()
-                     + " base em)"
-               )
+               .map(h -> h.text() + (h.price() >= 0 ? " (" + h.price() + " base em)" : ""))
                .toList();
-            return prefix + (books.isEmpty() ? "no enchanted book" : String.join(", ", books)) + " [forecast]";
+            return prefix + (books.isEmpty() ? "nothing notable" : String.join(", ", books)) + " [forecast]";
          }
       } else {
          return prefix + "not observed";
